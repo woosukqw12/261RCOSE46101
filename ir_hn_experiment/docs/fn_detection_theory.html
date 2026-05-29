@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>Training Dynamics FN Detection - Mathematical Formulation</title>
+<script>
+MathJax = { tex: { inlineMath: [['$','$']], displayMath: [['$$','$$']] } };
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js"></script>
+<style>
+body { font-family: 'Noto Sans KR', sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; line-height: 1.8; color: #222; }
+h1 { border-bottom: 2px solid #333; padding-bottom: 10px; }
+h2 { color: #1565c0; margin-top: 2em; }
+h3 { color: #2e7d32; }
+.box { background: #f5f5f5; border-left: 4px solid #1565c0; padding: 15px 20px; margin: 20px 0; }
+.key { background: #fff3e0; border-left: 4px solid #f57c00; padding: 15px 20px; margin: 20px 0; }
+.result { background: #e8f5e9; border-left: 4px solid #2e7d32; padding: 15px 20px; margin: 20px 0; }
+code { background: #eee; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+table { border-collapse: collapse; margin: 15px 0; }
+th, td { border: 1px solid #ccc; padding: 8px 14px; text-align: center; }
+th { background: #f0f0f0; }
+</style>
+</head>
+<body>
+
+<h1>Training Dynamics as FN Detector: Mathematical Formulation</h1>
+
+<h2>1. InfoNCE Loss and Per-Negative Gradient</h2>
+
+<p>Query $q$, positive $p$, negatives $\{n_1, \dots, n_K\}$에 대한 InfoNCE loss:</p>
+
+$$\mathcal{L} = -\log \frac{e^{s_p / \tau}}{e^{s_p / \tau} + \sum_{j=1}^{K} e^{s_{n_j} / \tau}}$$
+
+<p>여기서 $s_p = \text{sim}(q, p)$, $s_{n_j} = \text{sim}(q, n_j)$, $\tau$는 temperature.</p>
+
+<p>Negative $n_i$의 score $s_{n_i}$에 대한 gradient:</p>
+
+$$\frac{\partial \mathcal{L}}{\partial s_{n_i}} = \frac{e^{s_{n_i}/\tau}}{e^{s_p/\tau} + \sum_{j} e^{s_{n_j}/\tau}} \;=\; P_{\text{softmax}}(n_i \mid q)$$
+
+<div class="key">
+<strong>핵심 해석:</strong> 이 gradient는 모델이 $n_i$를 <em>밀어내려는 힘</em>의 크기.
+<ul>
+<li><strong>True negative:</strong> 학습 진행 &rarr; $s_{n_i}$ 감소 &rarr; $P(n_i|q) \to 0$</li>
+<li><strong>False negative:</strong> $s_{n_i}$가 안 떨어짐 &rarr; $P(n_i|q)$가 <strong>계속 높게 유지</strong></li>
+</ul>
+</div>
+
+<h2>2. 수학적으로 정확한 FN Score</h2>
+
+<p>학습 $T$ epoch에 걸친 <strong>softmax 확률의 시간 평균</strong>:</p>
+
+$$\text{FN}_{\text{score}}(q, n_i) = \frac{1}{T}\sum_{t=1}^{T} P_t(n_i \mid q)$$
+
+<p>여기서 $P_t(n_i|q)$는 epoch $t$에서의 softmax 확률.</p>
+
+<div class="box">
+이 양이 높을수록 = 모델이 학습 내내 $n_i$를 positive와 구분 못함 = FN 후보.
+</div>
+
+<h2>3. mp3+가 근사하는 것</h2>
+
+<p>Margin &gt; 0 조건 ($s_{n_i} > s_p$)은 $P(n_i|q)$가 높은 상태의 <strong>indicator function</strong>:</p>
+
+$$s_{n_i} > s_p \;\Longleftrightarrow\; P(n_i|q) > \frac{1}{K+1} \cdot \frac{1}{\text{(normalization)}}$$
+
+<p>따라서 <code>persistent_count</code>는:</p>
+
+$$\text{persistent\_count}(q, n_i) = \sum_{t=1}^{T} \mathbf{1}\!\left[s_{n_i}^{(t)} > s_p^{(t)}\right] \;\approx\; T \cdot \overline{P(n_i|q)}$$
+
+<p>mp3+ 조건 ($\geq 3$ out of $5$):</p>
+
+$$\text{mp3+}: \quad \sum_{t=1}^{5} \mathbf{1}[s_{n_i}^{(t)} > s_p^{(t)}] \;\geq\; 3$$
+
+<h3>3.1 이항검정 해석</h3>
+
+<table>
+<tr><th>가설</th><th>의미</th><th>$P(\text{margin} > 0)$ 패턴</th></tr>
+<tr><td>$H_0$</td><td>True negative</td><td>epoch 진행 시 감소: $p_1 > p_2 > \cdots > p_T$</td></tr>
+<tr><td>$H_1$</td><td>False negative</td><td>비감소: $p_1 \leq p_2 \leq \cdots \leq p_T$</td></tr>
+</table>
+
+<p>$H_0$ 하에서 $p(t)$가 감소한다고 가정하면 (예: $p = [0.5, 0.3, 0.2, 0.1, 0.05]$),
+5번 중 3번 이상 margin &gt; 0일 확률:</p>
+
+$$P\left(\sum_{t=1}^{5} X_t \geq 3 \;\middle|\; H_0\right) \approx 0.05$$
+
+<div class="key">
+<strong>mp3+ = 유의수준 ~5%의 이항검정.</strong> 이 확률이 낮으면 $H_0$ 기각 &rarr; FN 후보로 분류.
+</div>
+
+<h2>4. Bayes-Optimal FN Detector</h2>
+
+<p>Score trajectory $\mathbf{m} = \{m^{(t)}\}_{t=1}^{T}$ (margin = $s_{n_i} - s_p$ at each epoch)가 주어졌을 때:</p>
+
+$$P(\text{FN} \mid \mathbf{m}) = \frac{P(\mathbf{m} \mid \text{FN}) \cdot P(\text{FN})}{P(\mathbf{m})}$$
+
+<p>Score evolution이 Gaussian이라 가정하면:</p>
+
+$$m^{(t)} \mid \text{TN} \sim \mathcal{N}(\mu_{\text{TN}}(t),\; \sigma^2), \quad \mu_{\text{TN}}(t) \text{ 감소}$$
+$$m^{(t)} \mid \text{FN} \sim \mathcal{N}(\mu_{\text{FN}}(t),\; \sigma^2), \quad \mu_{\text{FN}}(t) \text{ 비감소}$$
+
+<p>이 모델의 <strong>충분통계량 (sufficient statistics)</strong>:</p>
+
+<table>
+<tr><th>충분통계량</th><th>우리 signal</th><th>의미</th></tr>
+<tr><td>$\bar{m} = \frac{1}{T}\sum_t m^{(t)}$</td><td><code>avg_margin</code></td><td>평균 margin</td></tr>
+<tr><td>$\hat{\beta} = \text{slope}(m^{(t)})$</td><td><code>margin_trend</code></td><td>margin 변화 방향</td></tr>
+<tr><td>$\text{Var}(m^{(t)})$</td><td><code>margin_variance</code></td><td>margin 불안정성</td></tr>
+</table>
+
+<div class="result">
+<strong>결론:</strong> 우리가 쓰는 signal들은 <em>ad-hoc 휴리스틱이 아니라</em>,
+Gaussian score evolution 가정 하에서 <strong>Bayes-optimal FN detector의 충분통계량</strong>에 정확히 대응한다.
+</div>
+
+<h2>5. Influence Function과의 연결</h2>
+
+<p>Koh &amp; Liang (2017)의 influence function:</p>
+
+$$\mathcal{I}(z_i) = -H_\theta^{-1} \nabla_\theta \ell(z_i, \theta)$$
+
+<p>여기서 $H_\theta$는 Hessian, $\ell(z_i, \theta)$는 sample $z_i$의 loss.</p>
+
+<p>우리의 time-averaged gradient signal은 이것의 <strong>online first-order approximation</strong>:</p>
+
+$$\text{FN}_{\text{score}}(q, n_i) = \frac{1}{T}\sum_{t=1}^{T} P_t(n_i|q) \;\approx\; \frac{1}{T}\sum_{t=1}^{T} \left\|\frac{\partial \ell_t}{\partial s_{n_i}}\right\|$$
+
+<div class="box">
+Influence function은 Hessian inverse가 필요해서 $O(p^2)$ 비용이지만,
+우리 signal은 <strong>학습 중 이미 계산되는 양</strong>을 기록할 뿐 &rarr; 추가 비용 = 0.
+</div>
+
+<h2>6. 논문 Framing 제안</h2>
+
+<div class="result">
+<p><strong>Proposition:</strong> InfoNCE 학습에서 negative $n_i$에 대한 per-epoch softmax probability
+$P_t(n_i|q)$의 시간 평균은 해당 pair의 false-negative-ness에 대한 consistent estimator이다.
+기존 training dynamics signal (avg_margin, persistent_count, margin_variance)은
+이 연속 양의 충분통계량에 대한 discrete/binary approximation으로 해석된다.</p>
+
+<p><strong>Corollary:</strong> <code>margin_persistent_3plus</code> criterion은 감소하는 base rate
+가정 하에서 유의수준 ~0.05의 이항검정에 해당한다.</p>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,134 @@
+\section{Approach}
+This section details your approach(es) to the problem. 
+For example, this is where you describe the architecture of your neural network(s), and any other key methods or algorithms.
+\begin{itemize}
+    \item You should be specific when describing your main approaches – you probably want to include equations and figures.
+    \item You should also describe your baseline(s). Depending on space constraints, and how standard your baseline is, you might do this in detail, or simply refer the reader to some other paper for the details.
+    \item If any part of your approach is original, make it clear (so I can give you credit!). For models and techniques that aren't yours, provide references.
+    \item If you’re using any code that you didn't write yourself, make it clear and provide a reference or link. When describing something you coded yourself, make it clear (so I can give you credit!).
+    \item As you’re setting up equations, notation, and the like, be sure to agree on a fixed technical vocabulary (that you've defined, or is well-defined in the literature) before writing and use it consistently throughout the report!
+
+\end{itemize}
+\subsection{preprocessing~}
+\subsection{Model}
+\label{sec:model}
+
+We adopt the principle that the encoder of a strong retriever should remain frozen and that any improvement must come from a lightweight, parameter-efficient intervention attached to it. The unmodified frozen ColBERT~v2~\cite{santhanam2022colbertv2} thus serves as our primary baseline; every $\Delta$~NDCG@10 number reported in \S\ref{sec:results} is the paired difference between the corresponding intervention and this baseline on the same query set. This subsection defines the design space of such interventions, organizes the ten variants we examine into three families, and then defines the loss function that drives the final model. Every method discussed below is trained with a single fixed configuration, and each design choice addresses a specific weakness uncovered by the previous one.
+
+\paragraph{Frozen retriever and intervention surface.}
+We use the publicly released ColBERT~v2 checkpoint~\cite{santhanam2022colbertv2} as a frozen encoder. ColBERT represents a query~$q$ and a document~$d$ as sequences of $128$-dimensional token embeddings produced by a BERT-base backbone and a learned linear projection; every token output is $L_2$-normalized,
+\begin{equation}
+\hat h_t \;=\; \frac{h_t}{\|h_t\|_2} \;\in\; \mathbb{S}^{127} \subset \mathbb{R}^{128},
+\label{eq:hat-h}
+\end{equation}
+so the retrieval score reduces to the MaxSim aggregation of token-level cosine similarities,
+\begin{equation}
+s(q, d) \;=\; \sum_{t \in q}\,\max_{t' \in d}\,\cos\bigl(\hat h_t^{\,q},\, \hat h_{t'}^{\,d}\bigr) \;=\; \sum_{t \in q}\,\max_{t' \in d}\,\bigl\langle \hat h_t^{\,q},\, \hat h_{t'}^{\,d}\bigr\rangle.
+\label{eq:maxsim}
+\end{equation}
+Throughout this paper we never modify any weight of the frozen encoder or projection head; we only attach a small trainable module whose forward pass perturbs the contextualized token representation~$h_t$ or augments the training loss.
+
+\paragraph{Query slicing on the frozen retriever.}
+For every query~$x$ the frozen retriever returns a top-$1$ document, which lets us partition the query set into two slices,
+\begin{align}
+\mathcal{Q}_{\text{hard}} &\;=\;\{x : \mathrm{top\text{-}1}_{\text{frozen}}(x) \notin \mathrm{qrels}^{+}(x)\}, \\
+\mathcal{Q}_{\text{easy}} &\;=\;\{x : \mathrm{top\text{-}1}_{\text{frozen}}(x) \in \mathrm{qrels}^{+}(x)\}.
+\end{align}
+The partition is determined entirely by the frozen model and is therefore deterministic and seed-invariant. On SciFact it yields $368$ hard and $441$ easy training queries ($45.5\,\%$ / $54.5\,\%$); the test split partitions identically. The two slices are the conceptual axis of our model design: the intervention must lift the hard slice without disturbing the easy slice.
+
+\paragraph{Design space.}
+We organize the interventions into three families. \emph{Family~1} applies a learned direction-subtraction at a single layer; \emph{Family~2} injects low-rank adapters into the query and value projections of every transformer layer; \emph{Family~3} augments the training loss with a representation-anchoring regularizer. We instantiate the three families as ten variants labelled (A)--(J) and report all of them in \S\ref{sec:results}.
+
+\subsubsection*{Family 1: direction-subtraction at a single layer}
+The simplest intervention removes a direction~$v \in \mathbb{R}^{768}$ from the contextualized token representation~$h_t^{(\ell)}$ at a target encoder layer~$\ell$, optionally modulated by a gate $g(\cdot)$:
+\begin{equation}
+\tilde h_t^{(\ell)} \;=\; h_t^{(\ell)} - g(h_t^{(\ell)})\cdot v.
+\label{eq:single-direction}
+\end{equation}
+We fix the layer at $\ell=12$ (the BERT pooler input) throughout and consider four instantiations of the operator on the right-hand side, all trained with the pairwise margin loss of Eq.~\eqref{eq:margin} as the only training signal.
+Variant~(A) computes $v$ once as the difference between the average hard-query and average easy-query token embeddings of the frozen model and applies $\tilde h = h - \alpha\,\hat v$ with no gate and a fixed scalar~$\alpha$.
+Variant~(B) makes the same vector~$v\!\in\!\mathbb{R}^{768}$ trainable ($768$ parameters) and pairs it with either a learned scalar gate $g(h)=\sigma(b)$ or a learned per-token gate $g(h)=\sigma(W h + b)$.
+Variant~(C) replaces the single direction with a bank of $K$ learned directions $\{v_k\}_{k=1}^{K}$ chosen by a softmax router,
+\[
+\tilde h_t = h_t - \sum_{k=1}^{K} \pi_k(h_t)\,v_k,\qquad \pi(h_t) = \mathrm{softmax}(W h_t + b),
+\]
+sweeping $K \in \{2, 4, 8\}$ as a continuum of mixture sizes.
+Variant~(D) samples $v$ once from $\mathcal{N}(0, I)$ and freezes it, isolating the contribution of magnitude alone (as opposed to a learned direction) as a falsification control.
+
+\subsubsection*{Family 2: low-rank adapters and triplet-data variants}
+The methods of Family~1 share two properties that limit them: each operates at a single intervention point, and each compresses the entire correction signal into one (or $K$) shared $768$-dimensional direction(s). To relax both limitations simultaneously we attach Low-Rank Adaptation~\cite{hu2021lora} adapters to the query and value projection matrices of every transformer layer:
+\begin{equation}
+W \;\mapsto\; W + \tfrac{\alpha}{r}\,B A,\qquad A \in \mathbb{R}^{r\times 768},\ B \in \mathbb{R}^{768\times r},
+\label{eq:lora}
+\end{equation}
+with rank $r{=}8$, scaling $\alpha{=}r$, $A_{ij} \stackrel{\text{i.i.d.}}{\sim} \mathcal{N}(0, \sigma^{2})$ with $\sigma = 0.02$, and $B$ initialized to zero so that $BA = 0$ and the adapted network is exactly the frozen baseline at step~$0$. We refer to each $(\text{layer}, \text{projection})$ pair at which an adapter is attached as an \emph{intervention point}; this gives $24$ intervention points ($12$ layers $\times$ $\{q, v\}$) and $294{,}912$ trainable parameters ($0.27\,\%$ of the $110$M-parameter encoder). Family~2 explores three variants that share this adapter architecture and differ only in how the triplet stream that drives the margin loss is constructed.
+
+Variant~(E), plain LoRA, optimizes the adapter of Eq.~\eqref{eq:lora} end-to-end with the standard mined triplets and no further regularizer. As we report in \S\ref{sec:results}, this setup delivers a large lift on the hard slice but introduces an almost equally large loss on the easy slice, so its aggregate metric appears flat -- a phenomenon we will refer to as \emph{performance redistribution} (a measurable, signed transfer of NDCG@10 between the two slices that leaves the aggregate close to zero). Variants~(F) and~(G) modify the triplet stream as diagnostic probes of the source of this redistribution, keeping the architecture identical to~(E).
+Variant~(F) re-scores every mined hard negative with an external E5-Mistral cross-encoder~\cite{wang2024e5mistral} and discards triplets for which the teacher disagrees with the original mining decision, retaining only $(q, d^+, d^-)$ with $\langle e_q^{\text{E5}}, e_{d^+}^{\text{E5}}\rangle > \langle e_q^{\text{E5}}, e_{d^-}^{\text{E5}}\rangle$.
+Variant~(G) replaces the mined hard negative with a uniformly chosen positive document from another query in the same batch,
+\[
+\tilde d_i^- \;\sim\; \mathrm{Uniform}\bigl(\{d_j^+ : j \in [B],\, j \neq i\}\bigr),
+\]
+where the probability that $\tilde d_i^-$ is a true relevant for query~$i$ is on the order of one positive over five thousand corpus documents on SciFact, so this is effectively a clean-negative source that strips out the difficulty of the mined hard contrast.
+The two variants therefore probe different hypotheses about the source of the redistribution: (F) tests whether label noise in the mined HN pool is the cause, while (G) tests whether the difficulty of the mined contrast itself is the cause. Their empirical separation is reported in \S\ref{sec:results}; the same separation motivates the loss-side intervention defined next.
+
+\subsubsection*{Family 3: representation-anchoring regularizer}
+The trade-off exhibited by plain LoRA can be attacked from the loss side rather than the architecture side. We augment the training objective with a regularizer that prevents easy-query representations from drifting away from the frozen reference. Before stating the regularizer we extend the notation of Eq.~\eqref{eq:hat-h} to encoder-conditioned token sequences.
+
+For an input token sequence~$z$ of length~$|z|$, the frozen and the LoRA-adapted encoders both emit $128$-dimensional token embeddings $h_t^{\text{frozen}}(z),\, h_t^{\text{LoRA}}(z) \in \mathbb{R}^{128}$ at position $t \in \{1, \ldots, |z|\}$; we apply Eq.~\eqref{eq:hat-h} component-wise to obtain the $L_2$-normalized tokens $\hat h_t^{\text{frozen}}(z), \hat h_t^{\text{LoRA}}(z) \in \mathbb{S}^{127}$. The full $L_2$-normalized token matrix and its row-wise inner-product (token-token cosine) matrix are
+\begin{equation}
+H(z) \;=\; \bigl[\hat h_1(z),\, \ldots,\, \hat h_{|z|}(z)\bigr]^{\top} \in \mathbb{R}^{|z|\times 128},
+\qquad
+\mathrm{Sim}(H) \;=\; H\,H^{\top} \in \mathbb{R}^{|z|\times|z|},
+\label{eq:sim-matrix}
+\end{equation}
+so that $[\mathrm{Sim}(H(z))]_{t,t'} = \cos(\hat h_t(z),\, \hat h_{t'}(z))$. Each easy query $x \in \mathcal{Q}_{\text{easy}}$ is associated with a training triplet $(q_x,\, d^+_x,\, d^-_x)$, where $q_x$ is the query itself, $d^+_x$ is a paired positive document, and $d^-_x$ is a mined hard negative.
+
+The per-token cosine deviation between the LoRA-adapted and frozen encoders on each role of the triplet is then defined component-wise as
+\begin{align}
+\mathcal{R}_{\text{abs}}^{\,q}(\theta) &\;=\; \mathbb{E}_{x \in \mathcal{Q}_{\text{easy}}}\!\left[\,\frac{1}{|q_x|}\sum_{t=1}^{|q_x|}\bigl(1 - \cos(\hat h_t^{\text{LoRA}}(q_x),\, \hat h_t^{\text{frozen}}(q_x))\bigr)\right], \label{eq:anchor-q}\\
+\mathcal{R}_{\text{abs}}^{\,d^+}(\theta) &\;=\; \mathbb{E}_{x \in \mathcal{Q}_{\text{easy}}}\!\left[\,\frac{1}{|d^+_x|}\sum_{t=1}^{|d^+_x|}\bigl(1 - \cos(\hat h_t^{\text{LoRA}}(d^+_x),\, \hat h_t^{\text{frozen}}(d^+_x))\bigr)\right], \label{eq:anchor-dpos}\\
+\mathcal{R}_{\text{abs}}^{\,d^-}(\theta) &\;=\; \mathbb{E}_{x \in \mathcal{Q}_{\text{easy}}}\!\left[\,\frac{1}{|d^-_x|}\sum_{t=1}^{|d^-_x|}\bigl(1 - \cos(\hat h_t^{\text{LoRA}}(d^-_x),\, \hat h_t^{\text{frozen}}(d^-_x))\bigr)\right]. \label{eq:anchor-dneg}
+\end{align}
+Each $\mathcal{R}_{\text{abs}}^{\,z}(\theta) \in [0, 2]$ vanishes precisely when the LoRA encoder reproduces the frozen encoder token-by-token on the corresponding role across the easy slice, and grows monotonically with cosine deviation. Alongside these we consider a rotation-invariant variant that anchors only the pairwise token-similarity structure (Eq.~\eqref{eq:sim-matrix}) rather than the absolute embedding direction:
+\begin{equation}
+\mathcal{R}_{\text{rel}}(\theta) \;=\; \mathbb{E}_{x \in \mathcal{Q}_{\text{easy}}}\!\left[\,\bigl\|\mathrm{Sim}(H_{\text{LoRA}}(q_x)) - \mathrm{Sim}(H_{\text{frozen}}(q_x))\bigr\|_F^{\,2}\right].
+\label{eq:anchor-rel}
+\end{equation}
+
+The four regularizers \eqref{eq:anchor-q}--\eqref{eq:anchor-rel} yield three concrete instantiations of progressively stronger anchoring.
+Variant~(H) uses the rotation-invariant regularizer $\mathcal{R}_{\text{rel}}$ of Eq.~\eqref{eq:anchor-rel}: the LoRA encoder may freely rotate or reflect the embedding space as long as the pairwise token inner products are preserved.
+Variant~(I) replaces the rotation-invariant regularizer with the stricter rotation-sensitive form $\mathcal{R}_{\text{abs}}^{\,q} + \mathcal{R}_{\text{abs}}^{\,d^+}$, fixing the absolute direction of each query token and each positive-document token to its frozen value.
+Variant~(J) is the symmetric completion of (I): since the MaxSim score~\eqref{eq:maxsim} is symmetric in $h^q$ and $h^d$, anchoring only the query side and the positive-document side leaves the mined hard negative free to drift through the shared LoRA weights. Adding $\mathcal{R}_{\text{abs}}^{\,d^-}$ to obtain the regularizer $\mathcal{R}_{\text{abs}}^{\,q} + \mathcal{R}_{\text{abs}}^{\,d^+} + \mathcal{R}_{\text{abs}}^{\,d^-}$ closes this asymmetry and provides a direct empirical probe of whether (I) sits at the ceiling of the anchor family or merely at an artefact of an asymmetric target set.
+
+\paragraph{Final training objective.}
+The combined loss decomposes by query slice. Hard queries supply a pairwise margin loss with mined hard negatives,
+\begin{equation}
+\mathcal{L}_{\text{margin}}(q, d^+, d^-) \;=\; \max\!\bigl(0,\; m - s(q, d^+) + s(q, d^-)\bigr),\quad m{=}0.2,
+\label{eq:margin}
+\end{equation}
+while easy queries supply the anchor terms of Eqs.~\eqref{eq:anchor-q}--\eqref{eq:anchor-rel}. The most general form used in this paper is
+\begin{equation}
+\mathcal{L}(\theta) \;=\; \mathcal{L}_{\text{margin}}\bigl(\mathcal{Q}_{\text{hard}};\theta\bigr) \;+\; \lambda_{\text{dir}}\bigl(\mathcal{R}_{\text{abs}}^{\,q}+\mathcal{R}_{\text{abs}}^{\,d^+}\bigr) \;+\; \lambda_{\text{neg}}\,\mathcal{R}_{\text{abs}}^{\,d^-},
+\label{eq:total}
+\end{equation}
+with $\lambda_{\text{dir}}=\lambda_{\text{neg}}=1$ as a single value fixed prior to training. Variant~(I) corresponds to $\lambda_{\text{neg}}=0$, and variant~(H) replaces the $\lambda_{\text{dir}}$ term by $\lambda\,\mathcal{R}_{\text{rel}}$.
+
+The two terms in Eq.~\eqref{eq:total} act on disjoint query subsets, so the gradient field decomposes as
+\begin{equation}
+\nabla_\theta\mathcal{L}
+\;=\;
+\underbrace{\nabla_\theta\mathcal{L}_{\text{margin}}\big|_{\mathcal{Q}_{\text{hard}}}}_{g_{\text{push}}(\theta)}
+\;+\;
+\underbrace{\bigl[\lambda_{\text{dir}}\bigl(\nabla_\theta\mathcal{R}_{\text{abs}}^{q} + \nabla_\theta\mathcal{R}_{\text{abs}}^{d^+}\bigr) + \lambda_{\text{neg}}\,\nabla_\theta\mathcal{R}_{\text{abs}}^{d^-}\bigr]\big|_{\mathcal{Q}_{\text{easy}}}}_{g_{\text{pull}}(\theta)}.
+\label{eq:gradient-split}
+\end{equation}
+The first term pushes the model away from the frozen baseline on hard queries; the second pulls it back on easy queries. Because the anchor is a soft regularizer rather than a hard constraint, the trained model converges to an interior equilibrium point $\theta^{\star}$ at which the two gradient contributions cancel, $g_{\text{push}}(\theta^{\star}) + g_{\text{pull}}(\theta^{\star}) = 0$. We directly measure the corresponding equilibrium expected cosine
+\begin{equation}
+\mathbb{E}_{x\in\mathcal{Q}_{\text{easy}},\,t}\bigl[\cos(\hat h_t^{\text{LoRA}}(x),\, \hat h_t^{\text{frozen}}(x))\bigr] \;=\; 0.824 \pm 0.005
+\label{eq:soft-equilibrium}
+\end{equation}
+on SciFact, which lies strictly between the hard-clamp value of $1$ (no LoRA drift) and the unanchored LoRA value (large drift): the LoRA representation is permitted to deviate, but only as far as the equilibrium of the two gradient fields allows.
+
+\paragraph{Original contributions and provenance.}
+Of the ten variants defined above, the foundational components are drawn from prior work: ColBERT~v2 and its MaxSim score~\eqref{eq:maxsim} are due to~\cite{santhanam2022colbertv2}; LoRA~\eqref{eq:lora} is due to~\cite{hu2021lora}; the E5-Mistral cross-encoder used as the teacher of variant~(F) is due to~\cite{wang2024e5mistral}; the in-batch easy-negative substitution of variant~(G) is a standard technique in contrastive retrieval training, popularised in dense passage retrieval~\cite{karpukhin2020dpr}. Variants~(A)--(D) instantiate well-known direction-subtraction templates and serve here as baselines and falsification controls. Variant~(E) is the standard application of LoRA to ColBERT. The remaining ingredients, to our knowledge, are original to this work: the hard/easy query partition defined by the frozen retriever's top-$1$ behavior, the per-token cosine anchor regularizers of Eqs.~\eqref{eq:anchor-q}--\eqref{eq:anchor-dneg} and their symmetric extension to mined hard negatives (variant~J), the joint training objective of Eq.~\eqref{eq:total} that combines a push loss on the hard slice with a pull regularizer on the easy slice, and the gradient-split analysis of Eqs.~\eqref{eq:gradient-split}--\eqref{eq:soft-equilibrium} together with the direct measurement of the interior equilibrium $\mathbb{E}[\cos(\hat h_t^{\text{LoRA}}, \hat h_t^{\text{frozen}})] = 0.824 \pm 0.005$ across three seeds.

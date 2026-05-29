@@ -1,0 +1,50 @@
+{
+  "scifact/qv_r8_l12": {
+    "diagnostic_NDCG10_all": 0.6366754703053634,
+    "reported_NDCG10_all": 0.6367,
+    "match_within_0.01": true,
+    "abs_diff": 2.4529694636621358e-05
+  },
+  "scifact/qv_r8_l12_m1": {
+    "diagnostic_NDCG10_all": 0.634200791876817,
+    "reported_NDCG10_all": 0.6342,
+    "match_within_0.01": true,
+    "abs_diff": 7.918768170078749e-07
+  },
+  "scifact/qv_r8_l12_m1b": {
+    "diagnostic_NDCG10_all": 0.6612764163333745,
+    "reported_NDCG10_all": 0.6613,
+    "match_within_0.01": true,
+    "abs_diff": 2.3583666625470734e-05
+  },
+  "nfcorpus/qv_r8_l12": {
+    "diagnostic_NDCG10_all": 0.009415376742295799,
+    "reported_NDCG10_all": 0.0094,
+    "match_within_0.01": true,
+    "abs_diff": 1.5376742295798718e-05
+  },
+  "nfcorpus/qv_r8_l12_m1": {
+    "diagnostic_NDCG10_all": 0.011316045047402268,
+    "reported_NDCG10_all": 0.0113,
+    "match_within_0.01": true,
+    "abs_diff": 1.6045047402268864e-05
+  },
+  "nfcorpus/qv_r8_l12_m1b": {
+    "diagnostic_NDCG10_all": 0.24586829299682225,
+    "reported_NDCG10_all": 0.2459,
+    "match_within_0.01": true,
+    "abs_diff": 3.1707003177755544e-05
+  },
+  "fiqa/qv_r8_l12": {
+    "diagnostic_NDCG10_all": 0.0005334095222967826,
+    "reported_NDCG10_all": 0.0005,
+    "match_within_0.01": true,
+    "abs_diff": 3.3409522296782624e-05
+  },
+  "fiqa/qv_r8_l12_m1": {
+    "diagnostic_NDCG10_all": 0.0009462148036503987,
+    "reported_NDCG10_all": 0.0009,
+    "match_within_0.01": true,
+    "abs_diff": 4.6214803650398767e-05
+  }
+}

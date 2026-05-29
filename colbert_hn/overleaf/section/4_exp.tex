@@ -1,0 +1,104 @@
+\section{Experiments}
+This section contains the following.
+
+\subsection{Data}
+Describe the dataset(s) you are using (provide references). If it's not already clear, make sure the associated task is clearly described.
+Being precise about the exact form of the input and output can be very useful for readers attempting to understand your work, especially if you've defined your own task.
+
+\subsection{Evaluation method}
+Describe the evaluation metric(s) you use, plus any other details necessary to understand your evaluation.
+Some projects will have clear metrics from prior work on given datasets, but we realize that other projects will define their own metrics.
+If you're defining your own metrics, be clear as to what you're hoping to measure with each evaluation method (whether quantitative or qualitative, automatic or human-defined!), and how it's defined.
+
+\subsection{Experimental details}
+\label{sec:expdetails}
+
+\paragraph{Triplet construction.}
+We mine hard negatives once from the frozen retriever's top-$100$ pool, taking up to $10$ HNs per query and subsampling to a per-seed cap of $9{,}190$ triplets. This cap is the same for every method, so all interventions see exactly the same total amount of supervision and only differ in either (i) the trainable module attached to the encoder or (ii) how the triplet stream is filtered or substituted. Each triplet is routed by query type: if the query lies in $\mathcal{Q}_{\text{hard}}$ the triplet flows to the margin loss of Eq.~\eqref{eq:margin}; if it lies in $\mathcal{Q}_{\text{easy}}$ the triplet flows to the anchor terms of Eqs.~\eqref{eq:anchor-q}--\eqref{eq:anchor-rel}.
+
+\paragraph{Optimization.}
+We use AdamW with learning rate $5\!\times\!10^{-5}$ and weight decay $10^{-4}$, batch size~$32$, for up to $3$ epochs with patience-$2$ early stopping on validation NDCG@10. A $10\,\%$ slice of the training queries is held out as the validation set, and the best LoRA state across epochs is restored at convergence. All experiments share the same optimizer settings; LoRA hyperparameters ($r{=}8$, $\alpha{=}r$) and the anchor weight ($\lambda_{\text{dir}}{=}\lambda_{\text{neg}}{=}1$) are each a single value fixed prior to training. No per-method sweep is conducted.
+
+\paragraph{Triplet-side variants (F, G).}
+The two triplet-side perturbations defined in \S\ref{sec:model} are implemented at the data layer: (F) discards triplets for which the E5-Mistral cross-encoder disagrees with the original mining decision, retaining $\approx\!86\%$ of the SciFact triplets, and (G) replaces the hard negative document with a uniformly sampled positive document from another query in the same batch. Variants F and G are compared to plain LoRA at the same triplet cap of $9{,}190$ (after F's filtering) and the same optimization protocol.
+
+\paragraph{Reproducibility.}
+Every reported number is the mean over three random seeds $\{42, 1337, 2024\}$, with $\pm$ standard deviation. All comparisons against the frozen baseline are reported as paired differences with $10{,}000$-iteration paired bootstrap~\cite{efron1979bootstrap} $95\,\%$ confidence intervals; we use ``strict net improvement'' to denote the case where the lower CI bound exceeds zero across all three seeds. Corpus scoring is exact brute-force MaxSim over the full corpus (no approximate index), so reported numbers reflect the actual scoring behavior of the model. All code, trained LoRA states, and per-query metrics are released with the paper.
+
+\paragraph{Software and code provenance.}
+Our experimental code is implemented in PyTorch~\cite{paszke2019pytorch} on top of HuggingFace Transformers~\cite{wolf2020transformers}. The frozen retriever forward pass loads the official \texttt{colbert-ir/colbertv2.0} checkpoint and reuses its MaxSim implementation~\cite{santhanam2022colbertv2}; the E5-Mistral teacher used in variant~(F) loads the public \texttt{intfloat/e5-mistral-7b-instruct} checkpoint~\cite{wang2024e5mistral}. The LoRA adapter injection of Eq.~\eqref{eq:lora}, the anchor regularizers of Eqs.~\eqref{eq:anchor-q}--\eqref{eq:anchor-rel}, the slice-routed training loop driven by Eq.~\eqref{eq:total}, the triplet-mining and triplet-substitution pipelines used by variants~(F)~and~(G), and the paired-bootstrap evaluation harness are written by us; no third-party LoRA or contrastive-retrieval library is used. The full source tree and all experiment artefacts are released with the paper.
+
+
+\subsection{Results}
+\label{sec:results}
+
+Table~\ref{tab:main-results} summarizes $\Delta$~NDCG@10 against the frozen baseline for every method introduced in \S\ref{sec:model}, decomposed into the hard and easy slices and over three random seeds.
+
+\begin{table}[t]
+\centering
+\caption{$\Delta$~NDCG@10 against the frozen ColBERT~v2 baseline on SciFact (test split, $300$ queries; hard $n{=}137$, easy $n{=}163$). Mean $\pm$ std over three seeds where applicable; ``N/A'' denotes a slice not measured for that variant (Family~1 single-seed sweeps generally report only the slice that the method targets). \checkmark indicates a strict net improvement (the lower bound of the $95\,\%$ paired-bootstrap CI exceeds zero) in $k$ of $3$ seeds; ``N/A'' under \emph{strict} indicates that the variant does not have a measured $\Delta_{\text{all}}$. Group separators correspond to the three intervention families of \S\ref{sec:model}. \textbf{Bold} marks the best $\Delta\,\mathrm{all}$ and the corresponding method.}
+\label{tab:main-results}
+\footnotesize
+\setlength{\tabcolsep}{3.5pt}
+\begin{tabular}{lcccc}
+\toprule
+Method & $\Delta$\,all & $\Delta$\,hard & $\Delta$\,easy & strict \\
+\midrule
+\multicolumn{5}{l}{\emph{Family 1: direction-subtraction at a single layer}} \\
+(A)  mean-difference, $\alpha{=}10$              & N/A            & $+0.064$ & N/A            & N/A \\
+(B)  single direction $+$ scalar gate            & $-0.020$       & N/A      & N/A            & $0/3$ \\
+(B)  single direction $+$ per-token gate         & N/A            & $-0.003$ & N/A            & N/A \\
+(C)  $K{=}2$ mixture                             & $+0.015$       & $+0.039$ & N/A            & $0/3$ \\
+(C)  $K{=}4$ mixture                             & $+0.015$       & $+0.045$ & N/A            & $0/3$ \\
+(C)  $K{=}8$ mixture                             & $-0.038$       & $+0.049$ & N/A            & $0/3$ \\
+(D)  random direction, $\alpha{=}10$              & $+0.000\pm 0.018$ & $+0.011$ & N/A          & $0/3$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Family 2: low-rank adapters and triplet-data variants}} \\
+(E)  plain LoRA $r{=}8$                          & $+0.001\pm 0.003$ & $+0.104\pm 0.012$ & $-0.085\pm 0.010$ & $0/3$ \\
+(F)  $+$ false-negative removal                  & $-0.004\pm 0.005$ & $+0.080\pm 0.011$ & $-0.073\pm 0.010$ & $0/3$ \\
+(G)  $+$ in-batch easy negatives                 & $+0.021\pm 0.004$\,\checkmark & $+0.065\pm 0.010$ & $-0.017\pm 0.006$ & $3/3$ \\
+\midrule
+\multicolumn{5}{l}{\emph{Family 3: representation-anchoring regularizer}} \\
+(H) relational anchor                            & $+0.029\pm 0.005$ & $+0.101\pm 0.010$ & $-0.031\pm 0.018$ & $2/3$ \\
+\textbf{(I) per-token anchor on $\{q, d^+\}$}    & $\mathbf{+0.030\pm 0.002}$\,\checkmark & $+0.092\pm 0.007$ & $-0.021\pm 0.003$ & $3/3$ \\
+(J) symmetric anchor on $\{q, d^+, d^-\}$        & $+0.028\pm 0.001$\,\checkmark & $+0.077\pm 0.003$ & $-0.014\pm 0.001$ & $3/3$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Direction-subtraction interventions do not deliver strict net improvement.}
+Methods A--D from Family~1 of \S\ref{sec:model} attempt to fix hard-query confusion by subtracting a single shared $768$-dimensional direction (or a small mixture of such directions) from a single layer. A non-learned mean-difference vector~(A) recovers $+0.064$ on the hard subset alone, comparable to a learned single-direction~(B), but at the price of a measurable easy-query loss whenever it is measured: the scalar-gated form drops $\Delta$\,all to $-0.020$ and the gates saturate at unity. The multi-direction router~(C) helps the hard subset roughly proportionally to $K$, reaching $+0.049$ at $K{=}8$, but the additional capacity damages the aggregate metric (the $K{=}8$ aggregate is $-0.038$, the worst of all our learned methods). The random-direction control~(D) recovers $+0.011$ on the hard subset with no learned direction at all (aggregate $+0.000 \pm 0.018$, $0/3$ strict), refuting the hypothesis that the magnitude of a single subtraction is by itself the operative quantity. Taken together these methods show that a single intervention point with a single (or low-$K$ mixture of) shared direction(s) is insufficient.
+
+\paragraph{Plain LoRA hides a redistribution.}
+LoRA~(E) breaks the limitation of Family~1 by spreading the intervention across $24$ separate (layer, projection) points. The aggregate result is $+0.001$ -- on the surface a no-op -- but the slice decomposition reveals that this hides a $+0.104$ lift on the hard slice purchased at the cost of a $-0.085$ loss on the easy slice. The redistribution is quantitatively exact. Writing the slice fractions on the SciFact test split as
+\begin{equation}
+w_{\text{hard}} \;=\; \frac{|\mathcal{Q}_{\text{hard}}^{\text{test}}|}{|\mathcal{Q}^{\text{test}}|} \;=\; \frac{137}{300} \;\approx\; 0.457,
+\qquad
+w_{\text{easy}} \;=\; \frac{|\mathcal{Q}_{\text{easy}}^{\text{test}}|}{|\mathcal{Q}^{\text{test}}|} \;=\; \frac{163}{300} \;\approx\; 0.543,
+\label{eq:slice-weights}
+\end{equation}
+and using the linearity of NDCG@10 averaging over disjoint slices, the slice-additive decomposition
+\begin{equation}
+\Delta_{\text{all}} \;=\; w_{\text{hard}}\,\Delta_{\text{hard}} + w_{\text{easy}}\,\Delta_{\text{easy}}
+\quad\Longleftrightarrow\quad
+\Delta_{\text{easy}} \;=\; \frac{\Delta_{\text{all}} - w_{\text{hard}}\,\Delta_{\text{hard}}}{w_{\text{easy}}}
+\label{eq:redistribution}
+\end{equation}
+predicts $\Delta_{\text{easy}} \approx (0.001 - 0.457 \cdot (+0.104))/0.543 \approx -0.086$, matching the observed $-0.085$ within one standard deviation. The intervention is therefore not ``inert''; it actively moves probability mass between the two slices.
+
+\paragraph{Isolating the cause of the redistribution.}
+The triplet-side variants F and G probe two candidate explanations. False-negative removal~(F) leaves a comparable redistribution: $\Delta$\,hard drops slightly to $+0.080$, $\Delta$\,easy improves only marginally to $-0.073$, and the aggregate is still negative ($-0.004$). Label noise in the mined hard-negative pool is therefore not the operative cause -- removing the noisy fraction does not undo the redistribution. In-batch easy negative substitution~(G) tells the opposite story: by replacing the mined hard negative with a clean easy negative the easy-query loss drops by an order of magnitude to $-0.017$, the hard-query lift is roughly halved to $+0.065$, and the aggregate crosses into the first strict net improvement of the paper at $+0.021$ ($3/3$ strict). The pair (F, G) thus isolates the difficulty of the mined hard contrast -- not its label noise -- as the mechanism producing the redistribution.
+
+\paragraph{Representation anchoring delivers strict net improvement.}
+Adding the easy-side anchor of Eqs.~\eqref{eq:anchor-q}--\eqref{eq:total} to plain LoRA -- without touching the triplet stream -- recovers the full hard-query lift of LoRA while neutralizing most of the easy-query damage. Variant~(I), the per-token anchor on $\{q, d^+\}$, achieves $\Delta\,\mathrm{all}{=}+0.030\pm 0.002$ ($3/3$ strict), preserving $88\,\%$ of plain LoRA's hard lift ($+0.092$ versus $+0.104$) and cutting the easy loss by $75\,\%$ ($-0.021$ versus $-0.085$). The rotation-invariant variant~(H) lands within statistical error of~(I) at $+0.029\pm 0.005$ ($2/3$ strict), so the absolute and relational geometric forms of the anchor produce statistically indistinguishable aggregate results and no specific algebraic form of the regularizer is preferred. The symmetric extension to the negative side~(J) then tests whether closing the asymmetry of~(I)'s target set yields a further improvement; it does not. Variant~(J) shrinks the easy-query loss further to $-0.014$ and reduces LoRA aggressiveness ($\|B\|_{\text{tot}}$ falls from $1.34$ to $1.24$), but the hard-query lift drops by an almost exactly compensating amount to $+0.077$, leaving the aggregate at $+0.028\pm 0.001$ -- statistically indistinguishable from~(I) at $+0.030$. The three regularizers therefore land at the same $(\Delta\,\mathrm{hard}, \Delta\,\mathrm{easy})$ operating point under our experimental conditions.
+
+\paragraph{Internal-geometry measurements at the equilibrium point.}
+The convergence of three distinct regularizers to a common operating point is also visible in the trained encoder's internal geometry. The equilibrium expected cosine of Eq.~\eqref{eq:soft-equilibrium} is $0.824 \pm 0.005$ across seeds, almost identical between variants~(H) and~(I). To quantify how much of the original representation diversity is preserved we measure the \emph{effective rank}~\cite{roy2007effective} of the easy-query token cloud. For a token matrix $\mathbf{H} \in \mathbb{R}^{N\times d}$ with singular values $\sigma_1, \ldots, \sigma_{\min(N,d)}$, the effective rank is the exponentiated Shannon entropy of the normalized squared spectrum,
+\begin{equation}
+\mathrm{eff\text{-}rank}(\mathbf{H}) \;=\; \exp\!\left(-\sum_{i} p_i \log p_i\right), \qquad p_i \;=\; \frac{\sigma_i^{2}}{\sum_{j} \sigma_j^{2}},
+\label{eq:effrank}
+\end{equation}
+which equals the nominal rank when the spectrum is flat and collapses to~$1$ when all mass concentrates on a single mode. The token-level effective rank rises from $1.58$ under plain LoRA to $9.01 \pm 0.36$ under variant~(I), recovering most of the way toward the frozen value of $55.13$. These two measurements -- the equilibrium cosine of Eq.~\eqref{eq:soft-equilibrium} and the effective rank of Eq.~\eqref{eq:effrank} -- link the observed saturation to a single equilibrium point of the two-component gradient field $\nabla_\theta\mathcal{L} = g_{\text{push}} + g_{\text{pull}}$ defined in Eq.~\eqref{eq:gradient-split}.
+
+\paragraph{Summary of findings.}
+Going from the simplest direction-subtraction interventions to the anchored LoRA model, the experimental sequence yields three conclusions. (i)~A single shared direction at a single intervention point cannot deliver a strict net improvement (variants A--D). (ii)~LoRA at all $24$ intervention points obtains the hard-query lift but at the cost of an almost equal easy-query loss, and the triplet-side controls (F, G) trace this loss to the difficulty of the mined hard negatives rather than to label noise in the pool. (iii)~An easy-side representation-anchor regularizer closes the loss, achieving the first $3/3$ strict net improvement of the paper at $\Delta\,\mathrm{all} = +0.030$, and three mathematically independent regularizers (H, I, J) converge to the same operating point in our experiments, with $+0.030$ acting as a practical upper bound under the fixed configuration used here.

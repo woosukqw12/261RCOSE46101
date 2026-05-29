@@ -1,0 +1,9 @@
+torch
+transformers<5
+ir_datasets
+rank_bm25
+tqdm
+orjson
+numpy
+scikit-learn
+colbert-ai==0.2.22

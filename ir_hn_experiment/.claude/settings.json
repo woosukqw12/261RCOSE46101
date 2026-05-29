@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch"
+    ],
+    "additionalDirectories": [
+      "/home/yoonheon/ir_hn_experiment/data/processed/fiqa_rlhn"
+    ]
+  }
+}

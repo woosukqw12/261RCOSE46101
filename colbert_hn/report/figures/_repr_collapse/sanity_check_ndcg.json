@@ -1,0 +1,23 @@
+{
+  "scifact": {
+    "diagnostic_NDCG10_all": 0.6366754703053634,
+    "diagnostic_NDCG10_confused": 0.24535199561100862,
+    "reported_NDCG10_all": 0.6367,
+    "match": true,
+    "n_queries": 300
+  },
+  "nfcorpus": {
+    "diagnostic_NDCG10_all": 0.009415376742295799,
+    "diagnostic_NDCG10_confused": 0.007459736245705326,
+    "reported_NDCG10_all": 0.0094,
+    "match": true,
+    "n_queries": 323
+  },
+  "fiqa": {
+    "diagnostic_NDCG10_all": 0.0005334095222967826,
+    "diagnostic_NDCG10_confused": 0.0005334095222967826,
+    "reported_NDCG10_all": 0.0388,
+    "match": false,
+    "n_queries": 648
+  }
+}
